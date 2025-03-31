@@ -199,8 +199,7 @@ class BleClient(private val activity: Activity, private val plugin: BleClientPlu
                     name = result.scanRecord?.deviceName
                 }
                 if (name == null) {
-                    // TODO: think about other filtering instead
-                    return;
+                    name = ""
                 }
                 val connected = this@BleClient.manager!!.getConnectionState(result.device,BluetoothProfile.GATT_SERVER) == BluetoothProfile.STATE_CONNECTED
                 val device = BleDevice(
