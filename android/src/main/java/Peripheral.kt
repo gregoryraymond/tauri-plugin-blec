@@ -31,6 +31,7 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
     private val onReadInvoke:MutableMap<UUID,Invoke> = mutableMapOf()
     private val onWriteInvoke:MutableMap<UUID,Invoke> = mutableMapOf()
     private var onDescriptorInvoke: Invoke? = null
+    private var onMtuInvoke: Invoke? = null
 
     private enum class Event{
         DeviceConnected,
@@ -48,46 +49,54 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
         channel.send(data)
     }
 
-    private val callback = object:BluetoothGattCallback(){
+    private val callback = object:BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
-            if(status == BluetoothGatt.GATT_SUCCESS && newState==BluetoothGatt.STATE_CONNECTED && gatt!=null){
+            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothGatt.STATE_CONNECTED && gatt != null) {
                 this@Peripheral.connected = true
                 this@Peripheral.gatt = gatt
-                this@Peripheral.onConnectionStateChange?.invoke(true,"")
+                this@Peripheral.onConnectionStateChange?.invoke(true, "")
                 this@Peripheral.sendEvent(Event.DeviceConnected)
 
             } else {
                 this@Peripheral.connected = false
                 this@Peripheral.gatt = null
-                this@Peripheral.onConnectionStateChange?.invoke(false,"Not connected. Status: $status, State: $newState")
+                this@Peripheral.onConnectionStateChange?.invoke(
+                    false,
+                    "Not connected. Status: $status, State: $newState"
+                )
                 this@Peripheral.sendEvent(Event.DeviceDisconnected)
             }
         }
+
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 this@Peripheral.services = listOf()
-                this@Peripheral.onServicesDiscovered?.invoke(false,"No services discovered. Status $status")
+                this@Peripheral.onServicesDiscovered?.invoke(
+                    false,
+                    "No services discovered. Status $status"
+                )
             } else {
                 this@Peripheral.services = gatt.services
-                for (s in gatt.services){
-                    for (c in s.characteristics){
+                for (s in gatt.services) {
+                    for (c in s.characteristics) {
                         this@Peripheral.characteristics[c.uuid] = c
                     }
                 }
-                this@Peripheral.onServicesDiscovered?.invoke(true,"")
+                this@Peripheral.onServicesDiscovered?.invoke(true, "")
             }
         }
+
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
             this@Peripheral.notifyChannel?.let {
-                synchronized(it){
+                synchronized(it) {
                     val notification = JSObject();
-                    notification.put("uuid",characteristic.uuid)
-                    notification.put("data",base64Encoder.encodeToString(value))
+                    notification.put("uuid", characteristic.uuid)
+                    notification.put("data", base64Encoder.encodeToString(value))
                     it.send(notification)
                 }
             }
@@ -143,13 +152,23 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
             descriptor: BluetoothGattDescriptor?,
             status: Int
         ) {
-            if (status != BluetoothGatt.GATT_SUCCESS){
+            if (status != BluetoothGatt.GATT_SUCCESS) {
                 this@Peripheral.onDescriptorInvoke?.reject("descriptor write failed with status: $status")
-            } else if (descriptor?.uuid != CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR){
+            } else if (descriptor?.uuid != CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR) {
                 this@Peripheral.onDescriptorInvoke?.reject("unexpected write to descriptor: ${descriptor?.uuid}")
             } else {
                 this@Peripheral.onDescriptorInvoke?.resolve()
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                this@Peripheral.onMtuInvoke?.reject("mtu change failed: $status")
+            }
+            val res = JSObject()
+            res.put("mtu",mtu)
+            this@Peripheral.onMtuInvoke?.resolve(res)
+
         }
     }
 
@@ -337,5 +356,15 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
             @Suppress("DEPRECATION")
             gatt.writeDescriptor(descriptor)
         }
+    }
+
+    fun requestMtu(invoke: Invoke, mtu: Int){
+        onMtuInvoke = invoke
+        val gatt = this.gatt
+        if (gatt == null){
+            invoke.reject("No gatt server connected")
+            return
+        }
+        gatt.requestMtu(mtu)
     }
 }

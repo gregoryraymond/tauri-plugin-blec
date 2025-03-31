@@ -219,6 +219,12 @@ pub struct Peripheral {
 struct ConnectParams {
     address: BDAddr,
 }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MtuParams {
+    address: BDAddr,
+    mtu: u16,
+}
 
 #[derive(serde::Deserialize)]
 struct BoolResult {
@@ -336,6 +342,16 @@ impl btleplug::api::Peripheral for Peripheral {
                 },
             )
             .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))?;
+        let mtu = get_handle()
+            .run_mobile_plugin(
+                "request_mtu",
+                MtuParams {
+                    address: self.address,
+                    mtu: 517,
+                },
+            )
+            .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))?;
+        info!("mtu set to: {:?}", mtu);
         Ok(())
     }
 
