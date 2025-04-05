@@ -5,6 +5,7 @@ use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _};
 use btleplug::platform::PeripheralId;
 use futures::{Stream, StreamExt};
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -240,16 +241,23 @@ impl Handler {
             error!("Failed to connect device: {e}");
             return Err(e);
         }
-        let mut state = self.state.lock().await;
-        // set callback to run on disconnect
-        state.on_disconnect = on_disconnect;
-        // discover service/characteristics
-        self.connect_services(&mut state).await?;
-        // start background task for notifications
-        state.listen_handle = Some(async_runtime::spawn(listen_notify(
-            self.connected_dev.lock().await.clone(),
-            self.notify_listeners.clone(),
-        )));
+        {
+            debug!("locking state");
+            let mut state = self.state.lock().await;
+            // set callback to run on disconnect
+            state.on_disconnect = on_disconnect;
+            debug!("connecting services");
+            // discover service/characteristics
+            self.connect_services(&mut state).await?;
+            debug!("Starting notification task");
+            // start background task for notifications
+            state.listen_handle = Some(async_runtime::spawn(listen_notify(
+                self.connected_dev.lock().await.clone(),
+                self.notify_listeners.clone(),
+            )));
+        }
+        self.send_connection_update(true).await;
+        info!("connecting done");
         Ok(())
     }
 
@@ -258,7 +266,9 @@ impl Handler {
         let device = device.as_ref().ok_or(Error::NoDeviceConnected)?;
         let mut services = device.services();
         if services.is_empty() {
+            debug!("starting service discovery");
             device.discover_services().await?;
+            debug!("service discovery done");
             services = device.services();
         }
         for s in services {
@@ -276,33 +286,32 @@ impl Handler {
         let device = devices
             .get(address)
             .ok_or(Error::UnknownPeripheral(address.to_string()))?;
-        *self.connected_dev.lock().await = Some(device.clone());
-        if device.is_connected().await? {
-            debug!("Device already connected");
-            self.connected_tx
-                .send(true)
-                .expect("failed to send connected update");
-        } else {
-            assert!(
-                !(*connected_rx.borrow_and_update()),
-                "connected_rx is true without device being connected, this is a bug"
-            );
-            debug!("Connecting to device");
-            device.connect().await?;
-            debug!("waiting for connection event");
-            // wait for the actual connection to be established
+        {
+            *self.connected_dev.lock().await = Some(device.clone());
+            if device.is_connected().await? {
+                debug!("Device already connected");
+                self.connected_tx
+                    .send(true)
+                    .expect("failed to send connected update");
+                return Ok(());
+            }
+        }
+        debug!("Connecting to device");
+        run_with_timeout(device.connect(), "Connect").await?;
+        // wait for the actual connection to be established
+        if !*connected_rx.borrow_and_update() {
+            info!("waiting for connection event");
             connected_rx
                 .changed()
                 .await
                 .expect("failed to wait for connection event");
-            debug!("Connecting done");
-            if !*self.connected_rx.borrow() {
-                // still not connected
-                return Err(Error::ConnectionFailed);
-            }
         }
-
-        self.send_connection_update(true).await;
+        if !*self.connected_rx.borrow() {
+            // still not connected
+            warn!("Still not connected after connection event");
+            return Err(Error::ConnectionFailed);
+        }
+        info!("device connected");
         Ok(())
     }
 
@@ -501,7 +510,7 @@ impl Handler {
         };
         debug!("discovering services on {address}");
         if device.services().is_empty() {
-            device.discover_services().await?;
+            run_with_timeout(device.discover_services(), "discover services").await?;
         }
         let services = device.services().iter().map(Service::from).collect();
         if !already_connected {
@@ -661,6 +670,7 @@ impl Handler {
     }
 
     pub(crate) async fn handle_event(&self, event: CentralEvent) -> Result<(), Error> {
+        debug!("handling event: {event:?}");
         match event {
             CentralEvent::DeviceDisconnected(peripheral_id) => {
                 self.handle_disconnect(peripheral_id).await?;
@@ -693,12 +703,13 @@ impl Handler {
                 self.connected_tx
                     .send(true)
                     .expect("failed to send connected update");
+                debug!("connected_tx updated");
             } else {
                 // event not for currently connected device, ignore
-                debug!("Unexpected connect event for device {peripheral_id}, connected device is {connected_device}");
+                warn!("Unexpected connect event for device {peripheral_id}, connected device is {connected_device}");
             }
         } else {
-            debug!(
+            warn!(
                 "connect event for device {peripheral_id} received without waiting for connection"
             );
         }
@@ -706,6 +717,7 @@ impl Handler {
 
     async fn send_connection_update(&self, state: bool) {
         let tx = &mut self.state.lock().await.connection_update_channel;
+        info!("sending connection update to {} listeners", tx.len());
         let mut remove = vec![];
         for (i, t) in tx.iter_mut().enumerate() {
             if let Err(e) = t.send(state).await {
@@ -725,6 +737,16 @@ impl Handler {
             }
         }
     }
+}
+
+async fn run_with_timeout<T: Send + Sync + 'static>(
+    fut: impl Future<Output = Result<T, btleplug::Error>> + Send,
+    cmd: &str,
+) -> Result<T, Error> {
+    tokio::time::timeout(Duration::from_secs(5), fut)
+        .await
+        .map_err(|_| Error::Timeout(cmd.to_string()))?
+        .map_err(Error::Btleplug)
 }
 
 async fn filter_peripherals(discovered: &mut Vec<Peripheral>, filter: &ScanFilter) {

@@ -37,6 +37,12 @@ pub enum Error {
     #[error("Mask must match manufacturer data length")]
     InvalidFilterMask,
 
+    #[error("Timeout during execution of {0}")]
+    Timeout(String),
+
+    #[error("Failed to join Task: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
+
     #[cfg(target_os = "android")]
     #[error(transparent)]
     PluginInvoke(#[from] tauri::plugin::mobile::PluginInvokeError),

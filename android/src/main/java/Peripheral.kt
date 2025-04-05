@@ -7,6 +7,8 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import app.tauri.plugin.Channel
 import app.tauri.plugin.Invoke
@@ -32,6 +34,7 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
     private val onWriteInvoke:MutableMap<UUID,Invoke> = mutableMapOf()
     private var onDescriptorInvoke: Invoke? = null
     private var onMtuInvoke: Invoke? = null
+    private var currentMtu = 517;
 
     private enum class Event{
         DeviceConnected,
@@ -53,6 +56,7 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothGatt.STATE_CONNECTED && gatt != null) {
+                // gatt.requestMtu(517)
                 this@Peripheral.connected = true
                 this@Peripheral.gatt = gatt
                 this@Peripheral.onConnectionStateChange?.invoke(true, "")
@@ -70,6 +74,8 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            println("onServicesDiscovered status $status, services ${gatt.services}")
+
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 this@Peripheral.services = listOf()
                 this@Peripheral.onServicesDiscovered?.invoke(
@@ -162,6 +168,8 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            println("MTU changed to $mtu with status $status")
+            currentMtu = mtu
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 this@Peripheral.onMtuInvoke?.reject("mtu change failed: $status")
             }
@@ -174,6 +182,7 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
 
     @SuppressLint("MissingPermission")
     fun connect(invoke:Invoke) {
+        println("connect android implementation called")
         this.onConnectionStateChange = { success, error ->
             if(success){
                 invoke.resolve()
@@ -198,10 +207,16 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
             } else {
                 invoke.reject(error)
             }
-            this@Peripheral.onServicesDiscovered = null
+            this.onServicesDiscovered = null
 
         }
-        gatt.discoverServices()
+
+        Handler(Looper.getMainLooper()).post(Runnable {
+            if (!gatt.discoverServices()) {
+                invoke.reject("failed to start service discovery");
+            }
+            println("service discovery started")
+        })
     }
 
     fun isConnected():Boolean {
@@ -358,13 +373,18 @@ class Peripheral(private val activity: Activity, private val device: BluetoothDe
         }
     }
 
+    @SuppressLint("MissingPermission")
     fun requestMtu(invoke: Invoke, mtu: Int){
         onMtuInvoke = invoke
         val gatt = this.gatt
-        if (gatt == null){
+        if (gatt == null) {
             invoke.reject("No gatt server connected")
             return
         }
-        gatt.requestMtu(mtu)
+        Handler(Looper.getMainLooper()).post(Runnable {
+            if (!gatt.requestMtu(mtu)) {
+                invoke.reject("Failed to request mtu")
+            }
+        })
     }
 }

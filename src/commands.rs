@@ -1,7 +1,7 @@
 use tauri::ipc::Channel;
 use tauri::{async_runtime, command, AppHandle, Runtime};
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::error::Result;
@@ -76,10 +76,12 @@ pub(crate) async fn connection_state<R: Runtime>(
         .expect("failed to send connection state");
     async_runtime::spawn(async move {
         while let Some(connected) = rx.recv().await {
+            debug!("Sending connection update to frontend: {connected}");
             update
                 .send(connected)
                 .expect("failed to send connection state to the front-end");
         }
+        warn!("Connection state channel closed");
     });
     Ok(())
 }

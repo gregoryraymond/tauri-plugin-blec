@@ -94,7 +94,11 @@ const showServices = ref(false);
       <div v-for="device in devices" class="row">
         <BleDev :key="device.address" :device="device"
           :show-services="showServices" 
-          :onclick="() => connect(device.address, () => console.log('disconnected'))" />
+          :onclick="async () => {
+            await connect(device.address, () => console.log('disconnected'));
+            console.log('connect command returned');
+          }"
+        />
       </div>
     </div>
   </div>

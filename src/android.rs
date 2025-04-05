@@ -10,6 +10,7 @@ use btleplug::{
 use futures::Stream;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::Deserialize;
+use std::time::Duration;
 use std::{
     collections::{BTreeSet, HashMap},
     pin::Pin,
@@ -22,7 +23,7 @@ use tauri::{
 };
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, btleplug::Error>;
@@ -88,6 +89,7 @@ impl btleplug::api::Central for Adapter {
             let event = response
                 .deserialize::<CentralEvent>()
                 .expect("failed to deserialize event");
+            debug!("sending event: {event:?}");
             tx.blocking_send(event)
                 .expect("failed to send notification");
             Ok(())
@@ -227,6 +229,12 @@ struct MtuParams {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MtuResponse {
+    mtu: u16,
+}
+
+#[derive(serde::Deserialize)]
 struct BoolResult {
     result: bool,
 }
@@ -334,48 +342,47 @@ impl btleplug::api::Peripheral for Peripheral {
     }
 
     async fn connect(&self) -> Result<()> {
-        get_handle()
-            .run_mobile_plugin(
-                "connect",
-                ConnectParams {
-                    address: self.address,
-                },
-            )
-            .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))?;
-        let mtu = get_handle()
-            .run_mobile_plugin(
-                "request_mtu",
-                MtuParams {
-                    address: self.address,
-                    mtu: 517,
-                },
-            )
-            .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))?;
-        info!("mtu set to: {:?}", mtu);
+        call_plugin_with_timeout(
+            "connect",
+            ConnectParams {
+                address: self.address,
+            },
+        )
+        .await?;
+        info!("connected to: {:?}", self.address);
+        debug!("requesting mtu");
+        let mtu: MtuResponse = call_plugin_with_timeout(
+            "request_mtu",
+            MtuParams {
+                address: self.address,
+                mtu: 517,
+            },
+        )
+        .await?;
+        info!("mtu set to: {:?}", mtu.mtu);
         Ok(())
     }
 
     async fn disconnect(&self) -> Result<()> {
-        get_handle()
-            .run_mobile_plugin(
-                "disconnect",
-                ConnectParams {
-                    address: self.address,
-                },
-            )
-            .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))?;
+        call_plugin_with_timeout(
+            "disconnect",
+            ConnectParams {
+                address: self.address,
+            },
+        )
+        .await?;
         Ok(())
     }
 
     async fn discover_services(&self) -> Result<()> {
-        get_handle()
-            .run_mobile_plugin(
-                "discover_services",
-                ConnectParams {
-                    address: self.address,
-                },
-            )
-            .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))?;
+        call_plugin_with_timeout(
+            "discover_services",
+            ConnectParams {
+                address: self.address,
+            },
+        )
+        .await?;
+        debug!("discover services plugin call returned");
         Ok(())
     }
 
@@ -414,7 +421,7 @@ impl btleplug::api::Peripheral for Peripheral {
                 },
             )
             .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))?;
-        info!("read: {:?}", res.value);
+        debug!("read: {:?}", res.value);
         Ok(res.value)
     }
 
@@ -494,4 +501,22 @@ impl btleplug::api::Peripheral for Peripheral {
     async fn read_descriptor(&self, _descriptor: &Descriptor) -> Result<Vec<u8>> {
         todo!()
     }
+}
+
+async fn call_plugin_with_timeout<
+    P: serde::Serialize + Send + 'static,
+    R: serde::de::DeserializeOwned + Send + 'static,
+>(
+    func: &'static str,
+    params: P,
+) -> Result<R> {
+    let handle = tokio::task::spawn_blocking(move || {
+        get_handle()
+            .run_mobile_plugin(func, params)
+            .map_err(|e| btleplug::Error::RuntimeError(e.to_string()))
+    });
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .map_err(|_| btleplug::Error::RuntimeError(format!("timeout during {func}")))?
+        .map_err(|e| btleplug::Error::RuntimeError(format!("tokio join error: {e}")))?
 }
