@@ -31,7 +31,6 @@ export async function startScan(handler: (devices: BleDevice[]) => void, timeout
   * Stop scanning for BLE devices
 */
 export async function stopScan() {
-  console.log('stop scan')
   await invoke('plugin:blec|stop_scan')
 }
 
@@ -74,19 +73,14 @@ export async function disconnect() {
   * @param onDisconnect - A function that will be called when the device disconnects
 */
 export async function connect(address: string, onDisconnect: (() => void) | null) {
-  console.log('connect', address)
   let disconnectChannel = new Channel()
   if (onDisconnect) {
     disconnectChannel.onmessage = onDisconnect
   }
-  try {
-    await invoke('plugin:blec|connect', {
-      address: address,
-      onDisconnect: disconnectChannel
-    })
-  } catch (e) {
-    console.error(e)
-  }
+  await invoke('plugin:blec|connect', {
+    address: address,
+    onDisconnect: disconnectChannel
+  })
 }
 
 /**
